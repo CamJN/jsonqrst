@@ -1,4 +1,7 @@
 #[macro_use] extern crate serde_json;
+//extern crate serde_json;
+extern crate regex;
+extern crate atty;
 
 use serde_json::{Value, Error};
 use std::io::Read;
@@ -22,9 +25,17 @@ fn main() {
     let stdin = std::io::stdin();
     let _:usize = stdin.lock().read_to_string(&mut data).expect("failed to read stdin");
 
-    println!("{}",apply_query(&data, &query).expect("Error parsing"));
-}
+    let ret = apply_query(&data, &query).expect("Error parsing");
 
+    let stdout = std::io::stdout();
+    let handle = stdout.lock();
+    let ok = if atty::is(atty::Stream::Stdout) {
+        serde_json::to_writer_pretty(handle, &ret)
+    } else {
+        serde_json::to_writer(handle, &ret)
+    };
+    println!("");
+}
 
 // idea: allow * as wildcard for a level (might only make sense for arrays, i dunno)
 // idea: allow multiple queries
@@ -32,6 +43,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+    //#[macro_use] extern crate serde_json;
     use super::apply_query;
 
     #[test]
@@ -47,5 +59,15 @@ mod tests {
 
         assert_eq!(json!("+44 1234567"), apply_query(data, "phones.0").unwrap());
         assert_eq!(json!("John Doe"), apply_query(data, "name").unwrap());
+    }
+
+    use regex::Regex;
+
+    #[test]
+    fn split_with_escapes() {
+        let re = Regex::new(r"(?:[^\\])\.|^\.").unwrap();
+        let fields:Vec<String> = re.split(r"a.b\.c").map(|s|s.replace(r"\.",".")).collect();
+
+        assert_eq!(vec!["a","b.c"], fields);
     }
 }
