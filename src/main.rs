@@ -1,17 +1,27 @@
+#[allow(unused_imports)]
 #[macro_use] extern crate serde_json;
-//extern crate serde_json;
-extern crate regex;
+#[macro_use] extern crate nom;
 extern crate atty;
 
 use serde_json::{Value, Error};
 use std::io::Read;
+
+
+named!(not_sep(&[u8]) -> String, map!(
+    escaped_transform!(is_not_s!(r".\"), '\\', alt!(
+        tag!(r".") => {|_| &b"."[..]} |
+        tag!(r"\") => {|_| &b"\\"[..]}
+    )), |i| String::from_utf8_lossy(&i).into_owned()
+));
+
+named!(split_with_escapes(&[u8]) -> Vec<String>, separated_list_complete!( char!('.'), not_sep));
 
 fn apply_query(data: &str, query: &str) -> Result<Value, Error> {
     let mut v = serde_json::from_str(data);
 
     let r:&mut Value = v.as_mut().unwrap();
 
-    let ret = query.split(".").fold(r,|acc,i| match i.parse::<usize>() {
+    let ret = split_with_escapes(query.as_bytes()).unwrap().1.iter().fold(r,|acc,i| match i.parse::<usize>() {
         Ok(i) => acc.get_mut(i).expect(&format!("index {} doesn't exist",i)),
         Err(_) => acc.get_mut(i).expect(&format!("index {} doesn't exist",i))
     });
@@ -29,25 +39,24 @@ fn main() {
 
     let stdout = std::io::stdout();
     let handle = stdout.lock();
-    let ok = if atty::is(atty::Stream::Stdout) {
+    match if atty::is(atty::Stream::Stdout) {
         serde_json::to_writer_pretty(handle, &ret)
     } else {
         serde_json::to_writer(handle, &ret)
-    };
-    println!("");
+    } {
+        Ok(_) => println!(""),
+        Err(e) => println!("{}",e),
+    }
 }
 
 // idea: allow * as wildcard for a level (might only make sense for arrays, i dunno)
 // idea: allow multiple queries
-// corner case: . in string (allow escaping?)
 
 #[cfg(test)]
 mod tests {
-    //#[macro_use] extern crate serde_json;
     use super::apply_query;
-
     #[test]
-    fn get_value() {
+    fn test_get_value() {
         let data = r#"{
                         "name": "John Doe",
                         "age": 43,
@@ -61,13 +70,18 @@ mod tests {
         assert_eq!(json!("John Doe"), apply_query(data, "name").unwrap());
     }
 
-    use regex::Regex;
-
+    use super::not_sep;
+    use nom::IResult;
     #[test]
-    fn split_with_escapes() {
-        let re = Regex::new(r"(?:[^\\])\.|^\.").unwrap();
-        let fields:Vec<String> = re.split(r"a.b\.c").map(|s|s.replace(r"\.",".")).collect();
+    fn test_not_sep() {
+        assert_eq!(IResult::Done(&b""[..], "b.c".to_string()), not_sep(b"b\\.c"));
+        assert_eq!(IResult::Done(&b".c"[..], "b".to_string()), not_sep(b"b.c"));
+    }
 
-        assert_eq!(vec!["a","b.c"], fields);
+    use super::split_with_escapes;
+    #[test]
+    fn test_split_with_escapes() {
+        assert_eq!(IResult::Done(&b""[..], vec!["a".to_string(),"b".to_string()]), split_with_escapes(b"a.b"));
+        assert_eq!(IResult::Done(&b""[..], vec!["a".to_string(),"b.c".to_string()]), split_with_escapes(b"a.b\\.c"));
     }
 }
