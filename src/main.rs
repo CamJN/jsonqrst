@@ -29,6 +29,12 @@ fn apply_query(data: &str, query: &str) -> Result<Value, Error> {
 }
 
 fn main() {
+    let default = "Failed to get panic message.".to_string();
+    std::panic::set_hook(Box::new(move |p|{
+        eprintln!("{}",p.payload().downcast_ref::<std::string::String>().unwrap_or(&default));
+        std::process::exit(-1);
+    }));
+
     let query = std::env::args().skip(1).fold(String::new(),|mut s,a|{s.push_str(&a);s});
 
     let mut data = String::new();
@@ -45,10 +51,11 @@ fn main() {
         serde_json::to_writer(handle, &ret)
     } {
         Ok(_) => println!(""),
-        Err(e) => println!("{}",e),
+        Err(e) => eprintln!("{}",e),
     }
 }
 
+// handle text keys that only contain #s
 // idea: allow * as wildcard for a level (might only make sense for arrays, i dunno)
 // idea: allow multiple queries
 
