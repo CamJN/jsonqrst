@@ -56,6 +56,20 @@ fn apply_query_dynamic(r: &Value, query: &[String]) -> Value {
     }
 }
 
+fn schema(r: &Value) -> Value {
+    match *r {
+        Value::Null => r.clone(),
+        Value::Bool(_) => json!("bool"),
+        Value::Number(_) => json!("number"),
+        Value::String(_) => json!("string"),
+        Value::Array(ref a) => match a.first() {
+            Some(one) => json!([schema(one)]),
+            None => json!([])
+        },
+        Value::Object(ref o) => Value::Object(o.iter().map(|(k,v)|(k.clone(),schema(v))).collect())
+    }
+}
+
 fn main() {
     std::panic::set_hook(Box::new(move |p|{
         if let Some(msg) = p.payload().downcast_ref::<&str>() {
@@ -70,6 +84,7 @@ fn main() {
 
     let mut args = std::env::args().skip(1).peekable();
     let literal_mode = args.peek() == Some(&"-F".to_string());
+    let schema_mode = args.peek() == Some(&"-s".to_string());
 
     let stdin = std::io::stdin();
     let stdin = stdin.lock();
@@ -77,6 +92,9 @@ fn main() {
     let ret = if literal_mode {
         let query = args.skip(1).fold(String::new(),|mut s,a|{s.push_str(&a);s});
         apply_query(stdin, &query).expect("Error parsing")
+    } else if schema_mode {
+        let value = serde_json::from_reader(stdin).expect("invalid json");
+        schema(&value)
     } else {
         let query = args.fold(String::new(),|mut s,a|{s.push_str(&a);s});
         let value = serde_json::from_reader(stdin).expect("invalid json");
@@ -101,7 +119,6 @@ fn main() {
 // idea: handle text keys that only contain #s, and that are the '*' key
 // idea: allow * as wildcard for maps (keep keys?)
 // idea: allow multiple queries
-// idea: print json schema
 
 #[cfg(test)]
 mod tests {
