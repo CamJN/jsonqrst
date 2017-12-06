@@ -6,7 +6,6 @@ extern crate atty;
 use serde_json::{Value, Error};
 use std::io::Read;
 
-
 named!(not_sep(&[u8]) -> String, map!(
     escaped_transform!(is_not_s!(r".\"), '\\', alt!(
         tag!(r".") => {|_| &b"."[..]} |
@@ -16,32 +15,76 @@ named!(not_sep(&[u8]) -> String, map!(
 
 named!(split_with_escapes(&[u8]) -> Vec<String>, separated_list_complete!( char!('.'), not_sep));
 
-fn apply_query(data: &str, query: &str) -> Result<Value, Error> {
-    let mut v = serde_json::from_str(data);
-
+fn apply_query<T:Read>(stdin: T, query: &str) -> Result<Value, Error> {
+    let mut v = serde_json::from_reader(stdin);
     let r:&mut Value = v.as_mut().unwrap();
 
-    let ret = split_with_escapes(query.as_bytes()).unwrap().1.iter().fold(r,|acc,i| match i.parse::<usize>() {
+    Ok(split_with_escapes(query.as_bytes()).unwrap().1.iter().fold(r,|acc,i| match i.parse::<usize>() {
         Ok(i) => acc.get_mut(i).expect(&format!("index {} doesn't exist",i)),
         Err(_) => acc.get_mut(i).expect(&format!("index {} doesn't exist",i))
-    });
-    Ok(ret.clone())
+    }).clone())
+}
+
+fn apply_query_dynamic(r: &Value, query: &[String]) -> Value {
+    if let Some((first, rest)) = query.split_first() {
+        if rest.is_empty() {
+            if first == "*" {
+                if r.is_array() {
+                    eprintln!("a trailing * is unnecessary, only use with maps");
+                    r.clone()
+                } else {
+                    panic!("this level is not an array, so cannot apply *");
+                }
+            } else {
+                match first.parse::<usize>() {
+                    Ok(i) => r.get(i).expect(&format!("index {} doesn't exist",i)),
+                    Err(_) => r.get(first).expect(&format!("index {} doesn't exist",first))
+                }.clone()
+            }
+        } else {
+            if first == "*" {
+                r.as_array().expect("this level is not an array, so cannot apply *").iter().map(|e|apply_query_dynamic(e,rest)).collect()
+            } else {
+                match first.parse::<usize>() {
+                    Ok(i) => apply_query_dynamic(r.get(i).expect(&format!("index {} doesn't exist",i)),rest),
+                    Err(_) => apply_query_dynamic(r.get(first).expect(&format!("index {} doesn't exist",first)),rest)
+                }.clone()
+            }
+        }
+    } else {
+        panic!("called with empty query slice");
+    }
 }
 
 fn main() {
-    let default = "Failed to get panic message.".to_string();
     std::panic::set_hook(Box::new(move |p|{
-        eprintln!("{}",p.payload().downcast_ref::<std::string::String>().unwrap_or(&default));
+        if let Some(msg) = p.payload().downcast_ref::<&str>() {
+            eprintln!("{}",msg);
+        } else if let Some(msg) = p.payload().downcast_ref::<std::string::String>() {
+            eprintln!("{}",msg);
+        } else {
+            eprintln!("Failed to get panic message.");
+        }
         std::process::exit(-1);
     }));
 
-    let query = std::env::args().skip(1).fold(String::new(),|mut s,a|{s.push_str(&a);s});
+    let mut args = std::env::args().skip(1).peekable();
+    let literal_mode = args.peek() == Some(&"-F".to_string());
 
-    let mut data = String::new();
     let stdin = std::io::stdin();
-    let _:usize = stdin.lock().read_to_string(&mut data).expect("failed to read stdin");
+    let stdin = stdin.lock();
 
-    let ret = apply_query(&data, &query).expect("Error parsing");
+    let ret = if literal_mode {
+        let query = args.skip(1).fold(String::new(),|mut s,a|{s.push_str(&a);s});
+        apply_query(stdin, &query).expect("Error parsing")
+    } else {
+        let query = args.fold(String::new(),|mut s,a|{s.push_str(&a);s});
+        let value = serde_json::from_reader(stdin).expect("invalid json");
+        apply_query_dynamic(
+            &value,
+            &split_with_escapes(query.as_bytes()).unwrap().1
+        )
+    };
 
     let stdout = std::io::stdout();
     let handle = stdout.lock();
@@ -55,16 +98,19 @@ fn main() {
     }
 }
 
-// handle text keys that only contain #s
-// idea: allow * as wildcard for a level (might only make sense for arrays, i dunno)
+// idea: handle text keys that only contain #s, and that are the '*' key
+// idea: allow * as wildcard for maps (keep keys?)
 // idea: allow multiple queries
+// idea: print json schema
 
 #[cfg(test)]
 mod tests {
     use super::apply_query;
+    use std::io::BufReader;
+
     #[test]
     fn test_get_value() {
-        let data = r#"{
+        let s = r#"{
                         "name": "John Doe",
                         "age": 43,
                         "phones": [
@@ -72,9 +118,11 @@ mod tests {
                           "+44 2345678"
                         ]
                       }"#;
+        let data1 = BufReader::new(s.as_bytes());
+        let data2 = BufReader::new(s.as_bytes());
 
-        assert_eq!(json!("+44 1234567"), apply_query(data, "phones.0").unwrap());
-        assert_eq!(json!("John Doe"), apply_query(data, "name").unwrap());
+        assert_eq!(json!("+44 1234567"), apply_query(data1, "phones.0").unwrap());
+        assert_eq!(json!("John Doe"), apply_query(data2, "name").unwrap());
     }
 
     use super::not_sep;
