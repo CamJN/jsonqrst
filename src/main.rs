@@ -3,7 +3,7 @@
 #[macro_use] extern crate nom;
 extern crate atty;
 
-use serde_json::{Value, Error};
+use serde_json::Value;
 use std::io::Read;
 
 named!(not_sep(&[u8]) -> String, map!(
@@ -15,14 +15,15 @@ named!(not_sep(&[u8]) -> String, map!(
 
 named!(split_with_escapes(&[u8]) -> Vec<String>, separated_list_complete!( char!('.'), not_sep));
 
-fn apply_query<T:Read>(stdin: T, query: &str) -> Result<Value, Error> {
+fn apply_query<T:Read>(stdin: T, query: &str) -> Value {
     let mut v = serde_json::from_reader(stdin);
     let r:&mut Value = v.as_mut().unwrap();
 
-    Ok(split_with_escapes(query.as_bytes()).unwrap().1.iter().fold(r,|acc,i| match i.parse::<usize>() {
-        Ok(i) => acc.get_mut(i).expect(&format!("index {} doesn't exist",i)),
-        Err(_) => acc.get_mut(i).expect(&format!("index {} doesn't exist",i))
-    }).clone())
+    split_with_escapes(query.as_bytes()).unwrap().1.iter().fold(r,|acc,i| match *acc {
+        Value::Array(ref mut a) => a.get_mut(i.parse::<usize>().expect(&format!("index {} isn't an unsigned integer",i))).expect(&format!("index {} doesn't exist",i)),
+        Value::Object(ref mut o) => o.get_mut(i).expect(&format!("index {} doesn't exist",i)),
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => panic!("tried to index a non-collection type")
+    }).clone()
 }
 
 fn apply_query_dynamic(r: &Value, query: &[String]) -> Value {
@@ -33,21 +34,23 @@ fn apply_query_dynamic(r: &Value, query: &[String]) -> Value {
                     eprintln!("a trailing * is unnecessary, only use with maps");
                     r.clone()
                 } else {
-                    panic!("this level is not an array, so cannot apply *");
+                    panic!("this element is not an array, so cannot apply *");
                 }
             } else {
-                match first.parse::<usize>() {
-                    Ok(i) => r.get(i).expect(&format!("index {} doesn't exist",i)),
-                    Err(_) => r.get(first).expect(&format!("index {} doesn't exist",first))
+                match *r {
+                    Value::Array(ref a) => a.get(first.parse::<usize>().expect(&format!("index {} isn't an unsigned integer",first))).expect(&format!("index {} doesn't exist",first)),
+                    Value::Object(ref o) => o.get(first).expect(&format!("index {} doesn't exist",first)),
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => panic!("tried to index a non-collection type")
                 }.clone()
             }
         } else {
             if first == "*" {
-                r.as_array().expect("this level is not an array, so cannot apply *").iter().map(|e|apply_query_dynamic(e,rest)).collect()
+                r.as_array().expect("this element is not an array, so cannot apply *").iter().map(|e|apply_query_dynamic(e,rest)).collect()
             } else {
-                match first.parse::<usize>() {
-                    Ok(i) => apply_query_dynamic(r.get(i).expect(&format!("index {} doesn't exist",i)),rest),
-                    Err(_) => apply_query_dynamic(r.get(first).expect(&format!("index {} doesn't exist",first)),rest)
+                match *r {
+                    Value::Array(ref a) => apply_query_dynamic(a.get(first.parse::<usize>().expect(&format!("index {} isn't an unsigned integer",first))).expect(&format!("index {} doesn't exist",first)),rest),
+                    Value::Object(ref o) => apply_query_dynamic(o.get(first).expect(&format!("index {} doesn't exist",first)),rest),
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => panic!("tried to index a non-collection type")
                 }.clone()
             }
         }
@@ -91,7 +94,7 @@ fn main() {
 
     let ret = if literal_mode {
         let query = args.skip(1).fold(String::new(),|mut s,a|{s.push_str(&a);s});
-        apply_query(stdin, &query).expect("Error parsing")
+        apply_query(stdin, &query)
     } else if schema_mode {
         let value = serde_json::from_reader(stdin).expect("invalid json");
         schema(&value)
@@ -116,7 +119,6 @@ fn main() {
     }
 }
 
-// idea: handle text keys that only contain #s, and that are the '*' key
 // idea: allow * as wildcard for maps (keep keys?)
 // idea: allow multiple queries
 
