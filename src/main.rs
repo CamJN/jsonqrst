@@ -1,29 +1,57 @@
 #[allow(unused_imports)]
-#[macro_use] extern crate serde_json;
-#[macro_use] extern crate nom;
+#[macro_use]
+extern crate serde_json;
 extern crate atty;
+extern crate nom;
 
+use nom::branch::alt;
+use nom::bytes::complete::{escaped_transform, is_not, tag};
+use nom::character::complete::char;
+use nom::combinator::{map, value};
+use nom::multi::separated_list1;
+use nom::IResult;
 use serde_json::Value;
 use std::io::Read;
 
-named!(not_sep(&[u8]) -> String, map!(
-    escaped_transform!(is_not_s!(r".\"), '\\', alt!(
-        tag!(r".") => {|_| &b"."[..]} |
-        tag!(r"\") => {|_| &b"\\"[..]}
-    )), |i| String::from_utf8_lossy(&i).into_owned()
-));
+fn not_sep(i: &[u8]) -> IResult<&[u8], String> {
+    map(
+        escaped_transform(
+            is_not(r".\"),
+            '\\',
+            alt((
+            value(&b"."[..], tag(r".")),
+            value(&b"\\"[..], tag(r"\"))
+            )),
+        ),
+        |i| String::from_utf8_lossy(&i).into_owned(),
+    )(i)
+}
 
-named!(split_with_escapes(&[u8]) -> Vec<String>, separated_list_complete!( char!('.'), not_sep));
+fn split_with_escapes(i: &[u8]) -> IResult<&[u8], Vec<String>> {
+    separated_list1(char('.'), not_sep)(i)
+}
 
-fn apply_query<T:Read>(stdin: T, query: &str) -> Value {
+fn apply_query<T: Read>(stdin: T, query: &str) -> Value {
     let mut v = serde_json::from_reader(stdin);
-    let r:&mut Value = v.as_mut().unwrap();
+    let r: &mut Value = v.as_mut().unwrap();
 
-    split_with_escapes(query.as_bytes()).unwrap().1.iter().fold(r,|acc,i| match *acc {
-        Value::Array(ref mut a) => a.get_mut(i.parse::<usize>().expect(&format!("index {} isn't an unsigned integer",i))).expect(&format!("index {} doesn't exist",i)),
-        Value::Object(ref mut o) => o.get_mut(i).expect(&format!("index {} doesn't exist",i)),
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => panic!("tried to index a non-collection type")
-    }).clone()
+    split_with_escapes(query.as_bytes())
+        .unwrap()
+        .1
+        .iter()
+        .fold(r, |acc, i| match *acc {
+            Value::Array(ref mut a) => a
+                .get_mut(
+                    i.parse::<usize>()
+                        .expect(&format!("index {} isn't an unsigned integer", i)),
+                )
+                .expect(&format!("index {} doesn't exist", i)),
+            Value::Object(ref mut o) => o.get_mut(i).expect(&format!("index {} doesn't exist", i)),
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                panic!("tried to index a non-collection type")
+            }
+        })
+        .clone()
 }
 
 fn apply_query_dynamic(r: &Value, query: &[String]) -> Value {
@@ -38,20 +66,50 @@ fn apply_query_dynamic(r: &Value, query: &[String]) -> Value {
                 }
             } else {
                 match *r {
-                    Value::Array(ref a) => a.get(first.parse::<usize>().expect(&format!("index {} isn't an unsigned integer",first))).expect(&format!("index {} doesn't exist",first)),
-                    Value::Object(ref o) => o.get(first).expect(&format!("index {} doesn't exist",first)),
-                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => panic!("tried to index a non-collection type")
-                }.clone()
+                    Value::Array(ref a) => a
+                        .get(
+                            first
+                                .parse::<usize>()
+                                .expect(&format!("index {} isn't an unsigned integer", first)),
+                        )
+                        .expect(&format!("index {} doesn't exist", first)),
+                    Value::Object(ref o) => o
+                        .get(first)
+                        .expect(&format!("index {} doesn't exist", first)),
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                        panic!("tried to index a non-collection type")
+                    }
+                }
+                    .clone()
             }
         } else {
             if first == "*" {
-                r.as_array().expect("this element is not an array, so cannot apply *").iter().map(|e|apply_query_dynamic(e,rest)).collect()
+                r.as_array()
+                    .expect("this element is not an array, so cannot apply *")
+                    .iter()
+                    .map(|e| apply_query_dynamic(e, rest))
+                    .collect()
             } else {
                 match *r {
-                    Value::Array(ref a) => apply_query_dynamic(a.get(first.parse::<usize>().expect(&format!("index {} isn't an unsigned integer",first))).expect(&format!("index {} doesn't exist",first)),rest),
-                    Value::Object(ref o) => apply_query_dynamic(o.get(first).expect(&format!("index {} doesn't exist",first)),rest),
-                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => panic!("tried to index a non-collection type")
-                }.clone()
+                    Value::Array(ref a) => apply_query_dynamic(
+                        a.get(
+                            first
+                                .parse::<usize>()
+                                .expect(&format!("index {} isn't an unsigned integer", first)),
+                        )
+                            .expect(&format!("index {} doesn't exist", first)),
+                        rest,
+                    ),
+                    Value::Object(ref o) => apply_query_dynamic(
+                        o.get(first)
+                            .expect(&format!("index {} doesn't exist", first)),
+                        rest,
+                    ),
+                    Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {
+                        panic!("tried to index a non-collection type")
+                    }
+                }
+                    .clone()
             }
         }
     } else {
@@ -67,18 +125,20 @@ fn schema(r: &Value) -> Value {
         Value::String(_) => json!("string"),
         Value::Array(ref a) => match a.first() {
             Some(one) => json!([schema(one)]),
-            None => json!([])
+            None => json!([]),
         },
-        Value::Object(ref o) => Value::Object(o.iter().map(|(k,v)|(k.clone(),schema(v))).collect())
+        Value::Object(ref o) => {
+            Value::Object(o.iter().map(|(k, v)| (k.clone(), schema(v))).collect())
+        }
     }
 }
 
 fn main() {
-    std::panic::set_hook(Box::new(move |p|{
+    std::panic::set_hook(Box::new(move |p| {
         if let Some(msg) = p.payload().downcast_ref::<&str>() {
-            eprintln!("{}",msg);
+            eprintln!("{}", msg);
         } else if let Some(msg) = p.payload().downcast_ref::<std::string::String>() {
-            eprintln!("{}",msg);
+            eprintln!("{}", msg);
         } else {
             eprintln!("Failed to get panic message.");
         }
@@ -93,18 +153,21 @@ fn main() {
     let stdin = stdin.lock();
 
     let ret = if literal_mode {
-        let query = args.skip(1).fold(String::new(),|mut s,a|{s.push_str(&a);s});
+        let query = args.skip(1).fold(String::new(), |mut s, a| {
+            s.push_str(&a);
+            s
+        });
         apply_query(stdin, &query)
     } else if schema_mode {
         let value = serde_json::from_reader(stdin).expect("invalid json");
         schema(&value)
     } else {
-        let query = args.fold(String::new(),|mut s,a|{s.push_str(&a);s});
+        let query = args.fold(String::new(), |mut s, a| {
+            s.push_str(&a);
+            s
+        });
         let value = serde_json::from_reader(stdin).expect("invalid json");
-        apply_query_dynamic(
-            &value,
-            &split_with_escapes(query.as_bytes()).unwrap().1
-        )
+        apply_query_dynamic(&value, &split_with_escapes(query.as_bytes()).unwrap().1)
     };
 
     let stdout = std::io::stdout();
@@ -115,7 +178,7 @@ fn main() {
         serde_json::to_writer(handle, &ret)
     } {
         Ok(_) => println!(""),
-        Err(e) => eprintln!("{}",e),
+        Err(e) => eprintln!("{}", e),
     }
 }
 
@@ -124,9 +187,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
+
     use super::apply_query;
     use std::io::BufReader;
-
     #[test]
     fn test_get_value() {
         let s = r#"{
@@ -140,22 +203,30 @@ mod tests {
         let data1 = BufReader::new(s.as_bytes());
         let data2 = BufReader::new(s.as_bytes());
 
-        assert_eq!(json!("+44 1234567"), apply_query(data1, "phones.0").unwrap());
-        assert_eq!(json!("John Doe"), apply_query(data2, "name").unwrap());
+        assert_eq!(
+            json!("+44 1234567"),
+            apply_query(data1, "phones.0")
+        );
+        assert_eq!(json!("John Doe"), apply_query(data2, "name"));
     }
 
     use super::not_sep;
-    use nom::IResult;
     #[test]
     fn test_not_sep() {
-        assert_eq!(IResult::Done(&b""[..], "b.c".to_string()), not_sep(b"b\\.c"));
-        assert_eq!(IResult::Done(&b".c"[..], "b".to_string()), not_sep(b"b.c"));
+        assert_eq!(Ok((&b""[..], "b.c".to_string())), not_sep(b"b\\.c"));
+        assert_eq!(Ok((&b".c"[..], "b".to_string())), not_sep(b"b.c"));
     }
 
     use super::split_with_escapes;
     #[test]
     fn test_split_with_escapes() {
-        assert_eq!(IResult::Done(&b""[..], vec!["a".to_string(),"b".to_string()]), split_with_escapes(b"a.b"));
-        assert_eq!(IResult::Done(&b""[..], vec!["a".to_string(),"b.c".to_string()]), split_with_escapes(b"a.b\\.c"));
+        assert_eq!(
+            Ok((&b""[..], vec!["a".to_string(), "b".to_string()])),
+            split_with_escapes(b"a.b")
+        );
+        assert_eq!(
+            Ok((&b""[..], vec!["a".to_string(), "b.c".to_string()])),
+            split_with_escapes(b"a.b\\.c")
+        );
     }
 }
