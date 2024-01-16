@@ -5,7 +5,6 @@ authors = ["Camden Narzt <c.narzt@me.com>"]
 
 [dependencies]
 serde_json = ">=1.0.2"
-atty = ">=0.2.2"
 nom = ">=3.1.0"
 
 [[bin]]

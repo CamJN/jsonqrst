@@ -1,7 +1,6 @@
 #[allow(unused_imports)]
 #[macro_use]
 extern crate serde_json;
-extern crate atty;
 extern crate nom;
 
 use nom::branch::alt;
@@ -12,6 +11,7 @@ use nom::multi::separated_list1;
 use nom::IResult;
 use serde_json::Value;
 use std::io::Read;
+use std::io::IsTerminal;
 
 fn not_sep(i: &[u8]) -> IResult<&[u8], String> {
     map(
@@ -172,7 +172,7 @@ fn main() {
 
     let stdout = std::io::stdout();
     let handle = stdout.lock();
-    match if atty::is(atty::Stream::Stdout) {
+    match if std::io::stdout().is_terminal() {
         serde_json::to_writer_pretty(handle, &ret)
     } else {
         serde_json::to_writer(handle, &ret)
